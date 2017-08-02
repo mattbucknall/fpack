@@ -92,7 +92,7 @@ class Aes128CbcCipher(Cipher):
 
 
 class Image:
-    def __init__(self, image_json):
+    def __init__(self, image_json, options):
         if type(image_json) is not dict:
             raise TypeError("Image section may only contain objects")
 
@@ -107,11 +107,13 @@ class Image:
             raise ValueError("Image IDs cannot exceed {0} bytes in length (UTF-8 encoded)"
                              .format(IMAGE_MAX_ID_LENGTH))
 
-        self.path = image_json.get("path")
-        if self.path is None:
+        path = image_json.get("path")
+        if path is None:
             raise TypeError("{0}: Path missing from image specification".format(id))
-        if type(self.path) is not str:
+        if type(path) is not str:
             raise TypeError("{0}: Image path is not a string".format(id))
+
+        self.path = os.path.join(options["root_dir"], path)
 
     def __str__(self):
         return self.id.decode('utf-8')
@@ -129,12 +131,6 @@ def print_usage():
         "  <fpk-file>       Path for FPK output file.\n\n"
         .format(os.path.basename(__file__))
     )
-
-
-def read_json_file(path):
-    with open(path) as f:
-        json_data = json.load(f)
-    return json_data
 
 
 def build_signatory(signature_json):
@@ -210,7 +206,7 @@ def build_metadata(metadata_json):
     return data
 
 
-def build_image_list(image_list_json):
+def build_image_list(image_list_json, options):
     data = []
 
     if image_list_json is None:
@@ -220,12 +216,12 @@ def build_image_list(image_list_json):
         raise TypeError("Image section must be an array")
 
     for image_json in image_list_json:
-        data.append(Image(image_json))
+        data.append(Image(image_json, options))
 
     return data
 
 
-def build_fpk(spec_json):
+def build_fpk(spec_json, options):
     try:
         if type(spec_json) is not dict:
             raise TypeError("Root must be an object")
@@ -233,12 +229,14 @@ def build_fpk(spec_json):
         signatory = build_signatory(spec_json.get("signature"))
         cipher = build_cipher(spec_json.get("cipher"))
         metadata = build_metadata(spec_json.get("metadata"))
-        image_list = build_image_list(spec_json.get("images"))
+        image_list = build_image_list(spec_json.get("images"), options)
 
     except TypeError as e:
         raise FatalError("Spec-file has invalid format: {0}".format(e))
     except ValueError as e:
         raise FatalError("Spec-file contains invalid value: {0}".format(e))
+
+    return b''
 
 
 def main(args=None):
@@ -250,9 +248,18 @@ def main(args=None):
         sys.exit(0)
 
     spec_path = sys.argv[1]
+    fpk_path = sys.argv[2]
+
+    options = {
+        "root_dir": "."
+    }
+
+    if len(args) >= 4:
+        options["root_dir"] = sys.argv[3]
 
     try:
-        spec_json = read_json_file(spec_path)
+        with open(spec_path) as f:
+            spec_json = json.load(f)
     except FileNotFoundError:
         raise FatalError("Spec-file {0} does not exist".format(spec_path))
     except IOError:
@@ -260,7 +267,13 @@ def main(args=None):
     except ValueError as e:
         raise FatalError("Spec-file contains invalid JSON: {0}".format(e))
 
-    fpk = build_fpk(spec_json)
+    fpk = build_fpk(spec_json, options)
+
+    try:
+        with open(fpk_path, "wb") as f:
+            f.write(fpk)
+    except IOError:
+        raise FatalError("Unable to write FPK file: {0}".format(e.strerror))
 
 
 try:
