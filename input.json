@@ -1,0 +1,18 @@
+{
+  "images": [
+    {
+      "id": "main",
+      "path": "main.bin"
+    },
+
+    {
+      "id": "fpga",
+      "path": "fpga.bin"
+    },
+
+    {
+      "id": "eeprom",
+      "path": "eeprom-defaults.bin"
+    }
+  ]
+}
