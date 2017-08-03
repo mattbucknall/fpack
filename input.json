@@ -1,4 +1,9 @@
 {
+  "metadata": {
+    "foo": "bar",
+    "another": "pair"
+  },
+
   "images": [
     {
       "id": "main",
