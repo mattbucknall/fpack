@@ -1,4 +1,14 @@
 {
+  "signature": {
+    "method": "hmac-sha256",
+    "key-file": "signature.key"
+  },
+
+  "cipher": {
+    "method": "aes128-cbc",
+    "key-file": "cipher.key"
+  },
+
   "metadata": {
     "foo": "bar",
     "another": "pair"

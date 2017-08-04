@@ -22,16 +22,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import hashlib
+import hmac
+import json
 import os
 import sys
 
-if sys.version_info < (3, 6):
-    print("Fatal error: {0} requires python 3.6 or greater"
-          .format(os.path.basename(__file__)))
-    sys.exit(1)
-
-import json
-import secrets
+from Crypto.Cipher import AES
 
 
 METADATA_MAX_N = 65535
@@ -59,44 +56,58 @@ class FatalError(Exception):
 def build_key(key_json, length, options):
     key_str = key_json.get("key")
     key_file = key_json.get("key-file")
+    write_file = False
 
     if key_str is None and key_file is None:
         raise TypeError("No key or key-file specified")
 
-    key = None
-
-    if type(key_str) is str:
-        try:
-            key = bytearray.fromhex(key_str)
-            if len(key) != length:
-                raise ValueError("Key must contain {0} hexadecimal digits".format(length * 2))
-        except ValueError:
-            raise ValueError("Invalid key string")
-    elif key_str is not None:
-        raise TypeError("Key must be a string containing {0} hexadecimal digits".format(length * 2))
+    if key_str is not None and type(key_str) is not str:
+        raise TypeError("key must be a string")
 
     if type(key_file) is str:
         key_file = os.path.join(options.get("root_dir"), key_file)
-        write_file = False
 
         if key_str is None:
             try:
                 with open(key_file, "r") as f:
-                    key_str = f.readline()
-            except IOError:
-                raise IOError("Unable to read key file: {0}".format(e.strerror))
+                    key_str = f.read().strip()
             except FileNotFoundError:
-                key_str = "hello"
+                key_str = os.urandom(length).hex()
                 write_file = True
+            except IOError as err:
+                raise IOError("Unable to read key file: {0}".format(err))
         else:
             write_file = True
+    elif key_file is not None:
+        raise TypeError("key-file must be a string")
 
-        if write_file:
-            try:
-                with open(key_file, "w") as f:
-                    f.print(key_str)
-            except IOError as e:
-                raise IOError("Unable to write key file: {0}".format(e.strerror))
+    try:
+        key = bytearray.fromhex(key_str)
+    except ValueError:
+        raise ValueError("Invalid key string: {0}".format(key_str))
+
+    if len(key) != length:
+        raise ValueError("Key must contain {0} hexadecimal digits".format(length * 2))
+
+    if write_file:
+        try:
+            os.remove(key_file)
+        except OSError:
+            pass
+
+        saved_umask = None
+
+        try:
+            saved_umask = os.umask(0o177)
+            fdesc = os.open(key_file, os.O_WRONLY | os.O_CREAT, 0o600)
+            with os.fdopen(fdesc, "w") as f:
+                f.write(key_str + "\n")
+        except IOError as err:
+            raise IOError("Unable to write key file: {0}".format(err))
+        finally:
+            os.umask(saved_umask)
+
+    return bytes(key)
 
 
 class Signatory:
@@ -113,7 +124,7 @@ class HmacSha256Signatory(Signatory):
 
     def __init__(self, signatory_json, options):
         super().__init__()
-        self.key = build_key(signatory_json, options)
+        self.key = build_key(signatory_json, 32, options)
 
     def __str__(self):
         return HmacSha256Signatory.METHOD_NAME
@@ -124,6 +135,9 @@ class HmacSha256Signatory(Signatory):
     @staticmethod
     def method_id():
         return FPK_SIGNATURE_METHOD_HMAC_SHA256
+
+    def sign(self, buffer):
+        return hmac.new(self.key, buffer, hashlib.sha256).digest()
 
 
 class Cipher:
@@ -140,7 +154,7 @@ class Aes128CbcCipher(Cipher):
 
     def __init__(self, cipher_json, options):
         super().__init__()
-        self.key = build_key(cipher_json, options)
+        self.key = build_key(cipher_json, 16, options)
 
     def __str__(self):
         return Aes128CbcCipher.METHOD_NAME
@@ -151,6 +165,11 @@ class Aes128CbcCipher(Cipher):
     @staticmethod
     def method_id():
         return FPK_CIPHER_METHOD_AES128_CBC
+
+    def encrypt(self, buffer):
+        iv = os.urandom(16)
+        cipher = AES.new(self.key, AES.MODE_CBC, iv)
+        return iv + cipher.encrypt(bytes(buffer))
 
 
 class Image:
@@ -356,7 +375,7 @@ def build_image_list(image_list_json, options):
 
     if len(image_list_json) > IMAGE_MAX_N:
         raise ValueError("Image section cannot contain more than {0} images"
-                         .format(IMAGES_MAX_N))
+                         .format(IMAGE_MAX_N))
 
     for image_json in image_list_json:
         data.append(Image(image_json, options))
@@ -376,10 +395,14 @@ def append_u32(buffer, value):
     buffer.append((value >> 24) & 0xFF)
 
 
-def append_alignment_padding(buffer, alignment):
+def padding_length(buffer, alignment):
     length = len(buffer)
     aligned_length = int((length + alignment - 1) / alignment) * alignment
-    buffer += b'\0' * (aligned_length - length)
+    return aligned_length - length;
+
+
+def append_alignment_padding(buffer, alignment):
+    buffer += b'\0' * padding_length(buffer, alignment)
 
 
 def append_preamble(buffer, n_blocks, signatory: Signatory, cipher: Cipher):
@@ -437,15 +460,21 @@ def build_fpk(spec_json, options):
         metadata = build_metadata(spec_json.get("metadata"))
         image_list = build_image_list(spec_json.get("images"), options)
 
-    except TypeError as e:
-        raise FatalError("Spec-file has invalid format: {0}".format(e))
-    except ValueError as e:
-        raise FatalError("Spec-file contains invalid value: {0}".format(e))
+        if cipher is not None and signatory is None:
+            print("WARNING: Cipher used without signature - Encrypted FPKs really ought to be signed.")
+
+    except TypeError as err:
+        raise FatalError("Spec-file has invalid format: {0}".format(err))
+    except ValueError as err:
+        raise FatalError("Spec-file contains invalid value: {0}".format(err))
 
     payload = bytearray()
     append_metadata(payload, metadata)
     append_image_list(payload, image_list)
     append_alignment_padding(payload, 16)
+
+    if cipher:
+        payload = cipher.encrypt(payload)
 
     n_blocks = int(len(payload) / 16)
 
@@ -453,6 +482,9 @@ def build_fpk(spec_json, options):
 
     append_preamble(fpk, n_blocks, signatory, cipher)
     fpk += payload
+
+    if signatory is not None:
+        fpk += signatory.sign(payload)
 
     crc = Crc32()
     crc.update(fpk)
@@ -484,23 +516,23 @@ def main(args=None):
             spec_json = json.load(f)
     except FileNotFoundError:
         raise FatalError("Spec-file {0} does not exist".format(spec_path))
-    except IOError as e:
-        raise FatalError("Unable to read spec-file: {0}".format(e.strerror))
-    except ValueError as e:
-        raise FatalError("Spec-file contains invalid JSON: {0}".format(e))
+    except IOError as err:
+        raise FatalError("Unable to read spec-file: {0}".format(err))
+    except ValueError as err:
+        raise FatalError("Spec-file contains invalid JSON: {0}".format(err))
 
     fpk = build_fpk(spec_json, options)
 
     try:
         with open(fpk_path, "wb") as f:
             f.write(fpk)
-    except IOError:
-        raise FatalError("Unable to write FPK file: {0}".format(e.strerror))
+    except IOError as err:
+        raise FatalError("Unable to write FPK file: {0}".format(err))
 
 
 try:
     if __name__ == "__main__":
         main()
-except FatalError as e:
-    print("Fatal error: {0}".format(e))
+except FatalError as err:
+    print("Fatal error: {0}".format(err))
     exit(1)
