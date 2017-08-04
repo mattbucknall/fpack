@@ -22,10 +22,16 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-
-import json
 import os
 import sys
+
+if sys.version_info < (3, 6):
+    print("Fatal error: {0} requires python 3.6 or greater"
+          .format(os.path.basename(__file__)))
+    sys.exit(1)
+
+import json
+import secrets
 
 
 METADATA_MAX_N = 65535
@@ -50,6 +56,49 @@ class FatalError(Exception):
         return str(self._message)
 
 
+def build_key(key_json, length, options):
+    key_str = key_json.get("key")
+    key_file = key_json.get("key-file")
+
+    if key_str is None and key_file is None:
+        raise TypeError("No key or key-file specified")
+
+    key = None
+
+    if type(key_str) is str:
+        try:
+            key = bytearray.fromhex(key_str)
+            if len(key) != length:
+                raise ValueError("Key must contain {0} hexadecimal digits".format(length * 2))
+        except ValueError:
+            raise ValueError("Invalid key string")
+    elif key_str is not None:
+        raise TypeError("Key must be a string containing {0} hexadecimal digits".format(length * 2))
+
+    if type(key_file) is str:
+        key_file = os.path.join(options.get("root_dir"), key_file)
+        write_file = False
+
+        if key_str is None:
+            try:
+                with open(key_file, "r") as f:
+                    key_str = f.readline()
+            except IOError:
+                raise IOError("Unable to read key file: {0}".format(e.strerror))
+            except FileNotFoundError:
+                key_str = "hello"
+                write_file = True
+        else:
+            write_file = True
+
+        if write_file:
+            try:
+                with open(key_file, "w") as f:
+                    f.print(key_str)
+            except IOError as e:
+                raise IOError("Unable to write key file: {0}".format(e.strerror))
+
+
 class Signatory:
     def __init__(self):
         pass
@@ -62,8 +111,9 @@ class Signatory:
 class HmacSha256Signatory(Signatory):
     METHOD_NAME = "hmac-sha256"
 
-    def __init__(self, signatory_json):
+    def __init__(self, signatory_json, options):
         super().__init__()
+        self.key = build_key(signatory_json, options)
 
     def __str__(self):
         return HmacSha256Signatory.METHOD_NAME
@@ -88,8 +138,9 @@ class Cipher:
 class Aes128CbcCipher(Cipher):
     METHOD_NAME = "aes128-cbc"
 
-    def __init__(self, cipher_json):
+    def __init__(self, cipher_json, options):
         super().__init__()
+        self.key = build_key(cipher_json, options)
 
     def __str__(self):
         return Aes128CbcCipher.METHOD_NAME
@@ -217,7 +268,7 @@ def print_usage():
     )
 
 
-def build_signatory(signature_json):
+def build_signatory(signature_json, options):
     if signature_json is None:
         return None
 
@@ -236,12 +287,12 @@ def build_signatory(signature_json):
     if method == "none":
         return None
     elif method == HmacSha256Signatory.METHOD_NAME:
-        return HmacSha256Signatory(signature_json)
+        return HmacSha256Signatory(signature_json, options)
     else:
         raise ValueError("Unknown signature method: {0}".format(method))
 
 
-def build_cipher(cipher_json):
+def build_cipher(cipher_json, options):
     if cipher_json is None:
         return None
 
@@ -260,7 +311,7 @@ def build_cipher(cipher_json):
     if method == "none":
         return None
     elif method == Aes128CbcCipher.METHOD_NAME:
-        return Aes128CbcCipher(cipher_json)
+        return Aes128CbcCipher(cipher_json, options)
     else:
         raise ValueError("Unknown cipher method: {0}".format(method))
 
@@ -381,8 +432,8 @@ def build_fpk(spec_json, options):
         if type(spec_json) is not dict:
             raise TypeError("Root must be an object")
 
-        signatory = build_signatory(spec_json.get("signature"))
-        cipher = build_cipher(spec_json.get("cipher"))
+        signatory = build_signatory(spec_json.get("signature"), options)
+        cipher = build_cipher(spec_json.get("cipher"), options)
         metadata = build_metadata(spec_json.get("metadata"))
         image_list = build_image_list(spec_json.get("images"), options)
 
