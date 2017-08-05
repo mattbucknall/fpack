@@ -278,11 +278,13 @@ class Crc32:
 
 def print_usage():
     print(
-        "Usage: {0} <spec-file> <fpk-file>\n\n"
+        "Usage: {0} <spec-file> <fpk-file> [root-dir]\n\n"
         "  <spec-file>      Path to input JSON file specifying images\n"
         "                   to include in FPK file, encryption keys\n"
         "                   etc.\n\n"
         "  <fpk-file>       Path for FPK output file.\n\n"
+        "  [root-dir]       Optional argument, specifies path prefix\n"
+        "                   for any files referenced in <spec-file>.\n"
         .format(os.path.basename(__file__))
     )
 
