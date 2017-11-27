@@ -27,6 +27,7 @@ import hmac
 import json
 import os
 import sys
+import time
 
 from Crypto.Cipher import AES
 
@@ -412,6 +413,7 @@ def append_preamble(buffer, n_blocks, signatory: Signatory, cipher: Cipher):
     buffer.append(0x50)  # P
     buffer.append(0x4B)  # K
     buffer.append(0x00)  # Version 0
+    append_u32(buffer, int(time.time()))
     append_u32(buffer, n_blocks)
 
     if signatory is None:
